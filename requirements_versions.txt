@@ -30,3 +30,6 @@ transformers==4.30.2
 httpx==0.24.1
 basicsr==1.4.2
 diffusers==0.25.0
+pydantic==1.10.11
+pydantic_core==2.18.4
+insightface @ https://github.com/Gourieff/Assets/raw/main/Insightface/insightface-0.7.3-cp310-cp310-win_amd64.whl
