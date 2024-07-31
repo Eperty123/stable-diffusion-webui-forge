@@ -18,6 +18,7 @@ from ldm.util import instantiate_from_config
 from modules_forge import forge_clip
 from modules_forge.unet_patcher import UnetPatcher
 from ldm_patched.modules.model_base import model_sampling, ModelType
+from backend.loader import load_huggingface_components
 
 import open_clip
 from transformers import CLIPTextModel, CLIPTokenizer
@@ -98,6 +99,8 @@ def load_checkpoint_guess_config(sd, output_vae=True, output_clip=True, output_c
         if output_clipvision:
             clipvision = ldm_patched.modules.clip_vision.load_clipvision_from_sd(sd, model_config.clip_vision_prefix, True)
 
+    huggingface_components = load_huggingface_components(sd)
+
     if output_model:
         inital_load_device = model_management.unet_inital_load_device(parameters, unet_dtype)
         offload_device = model_management.unet_offload_device()
@@ -105,9 +108,8 @@ def load_checkpoint_guess_config(sd, output_vae=True, output_clip=True, output_c
         model.load_model_weights(sd, "model.diffusion_model.")
 
     if output_vae:
-        vae_sd = ldm_patched.modules.utils.state_dict_prefix_replace(sd, {"first_stage_model.": ""}, filter_keys=True)
-        vae_sd = model_config.process_vae_state_dict(vae_sd)
-        vae = VAE(sd=vae_sd)
+        vae = huggingface_components['vae']
+        vae = VAE(model=vae, mapping=vae.state_dict_mapping)
 
     if output_clip:
         w = WeightsLoader()
