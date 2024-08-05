@@ -5,7 +5,7 @@ import torch
 from PIL import Image
 from modules import devices, images, sd_vae_approx, sd_samplers, sd_vae_taesd, shared, sd_models
 from modules.shared import opts, state
-from modules_forge.forge_sampler import sampling_prepare, sampling_cleanup
+from backend.sampling.sampling_function import sampling_prepare, sampling_cleanup
 from modules import extra_networks
 import k_diffusion.sampling
 
@@ -237,7 +237,7 @@ class Sampler:
         self.eta_infotext_field = 'Eta'
         self.eta_default = 1.0
 
-        self.conditioning_key = getattr(shared.sd_model.model, 'conditioning_key', 'crossattn')
+        self.conditioning_key = 'crossattn'
 
         self.p = None
         self.model_wrap_cfg = None

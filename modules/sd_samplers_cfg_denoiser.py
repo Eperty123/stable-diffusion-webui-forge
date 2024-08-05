@@ -6,7 +6,7 @@ import modules.shared as shared
 from modules.script_callbacks import CFGDenoiserParams, cfg_denoiser_callback
 from modules.script_callbacks import CFGDenoisedParams, cfg_denoised_callback
 from modules.script_callbacks import AfterCFGCallbackParams, cfg_after_cfg_callback
-from modules_forge import forge_sampler
+from backend.sampling.sampling_function import sampling_function
 
 
 def catenate_conds(conds):
@@ -31,6 +31,10 @@ def pad_cond(tensor, repeats, empty):
     return tensor
 
 
+def append_zero(x):
+    return torch.cat([x, x.new_zeros([1])])
+
+
 class CFGDenoiser(torch.nn.Module):
     """
     Classifier free guidance denoiser. A wrapper for stable diffusion model (specifically for unet)
@@ -39,8 +43,10 @@ class CFGDenoiser(torch.nn.Module):
     negative prompt.
     """
 
-    def __init__(self, sampler):
+    def __init__(self, sampler, model):
         super().__init__()
+        self.inner_model = model
+
         self.model_wrap = None
         self.mask = None
         self.nmask = None
@@ -64,9 +70,35 @@ class CFGDenoiser(torch.nn.Module):
 
         self.classic_ddim_eps_estimation = False
 
-    @property
-    def inner_model(self):
-        raise NotImplementedError()
+        self.sigmas = model.forge_objects.unet.model.predictor.sigmas
+        self.log_sigmas = self.sigmas.log()
+
+    def get_sigmas(self, n=None):
+        if n is None:
+            return append_zero(self.sigmas.flip(0))
+        t_max = len(self.sigmas) - 1
+        t = torch.linspace(t_max, 0, n, device=self.sigmas.device)
+        return append_zero(self.t_to_sigma(t))
+
+    def sigma_to_t(self, sigma, quantize=None):
+        quantize = self.quantize if quantize is None else quantize
+        log_sigma = sigma.log()
+        dists = log_sigma - self.log_sigmas[:, None]
+        if quantize:
+            return dists.abs().argmin(dim=0).view(sigma.shape)
+        low_idx = dists.ge(0).cumsum(dim=0).argmax(dim=0).clamp(max=self.log_sigmas.shape[0] - 2)
+        high_idx = low_idx + 1
+        low, high = self.log_sigmas[low_idx], self.log_sigmas[high_idx]
+        w = (low - log_sigma) / (low - high)
+        w = w.clamp(0, 1)
+        t = (1 - w) * low_idx + w * high_idx
+        return t.view(sigma.shape)
+
+    def t_to_sigma(self, t):
+        t = t.float()
+        low_idx, high_idx, w = t.floor().long(), t.ceil().long(), t.frac()
+        log_sigma = (1 - w) * self.log_sigmas[low_idx] + w * self.log_sigmas[high_idx]
+        return log_sigma.exp()
 
     def combine_denoised(self, x_out, conds_list, uncond, cond_scale, timestep, x_in, cond):
         denoised_uncond = x_out[-uncond.shape[0]:]
@@ -158,7 +190,7 @@ class CFGDenoiser(torch.nn.Module):
         original_x_dtype = x.dtype
 
         if self.classic_ddim_eps_estimation:
-            acd = self.inner_model.inner_model.alphas_cumprod
+            acd = self.inner_model.alphas_cumprod
             fake_sigmas = ((1 - acd) / acd) ** 0.5
             real_sigma = fake_sigmas[sigma.round().long().clip(0, int(fake_sigmas.shape[0]))]
             real_sigma_data = 1.0
@@ -179,8 +211,7 @@ class CFGDenoiser(torch.nn.Module):
         denoiser_params = CFGDenoiserParams(x, image_cond, sigma, state.sampling_step, state.sampling_steps, cond, uncond, self)
         cfg_denoiser_callback(denoiser_params)
 
-        denoised = forge_sampler.forge_sample(self, denoiser_params=denoiser_params,
-                                              cond_scale=cond_scale, cond_composition=cond_composition)
+        denoised = sampling_function(self, denoiser_params=denoiser_params, cond_scale=cond_scale, cond_composition=cond_composition)
 
         if self.mask is not None:
             blended_latent = denoised * self.nmask + self.init_latent * self.mask
@@ -207,4 +238,3 @@ class CFGDenoiser(torch.nn.Module):
             return eps
 
         return denoised.to(device=original_x_device, dtype=original_x_dtype)
-

@@ -10,17 +10,15 @@ import re
 import safetensors.torch
 from omegaconf import OmegaConf, ListConfig
 from urllib import request
-import ldm.modules.midas as midas
 import gc
 
 from modules import paths, shared, modelloader, devices, script_callbacks, sd_vae, sd_disable_initialization, errors, hashes, sd_models_config, sd_unet, sd_models_xl, cache, extra_networks, processing, lowvram, sd_hijack, patches
+from modules.shared import opts, cmd_opts
 from modules.timer import Timer
 import numpy as np
-from modules_forge import forge_loader
-import modules_forge.ops as forge_ops
-from ldm_patched.modules.ops import manual_cast
-from ldm_patched.modules import model_management as model_management
-import ldm_patched.modules.model_patcher
+from backend.loader import forge_loader
+from backend import memory_management
+from backend.args import dynamic_args
 
 
 model_dir = "Stable-diffusion"
@@ -367,138 +365,31 @@ class SkipWritingToConfig:
 
 
 def check_fp8(model):
-    if model is None:
-        return None
-    if devices.get_optimal_device_name() == "mps":
-        enable_fp8 = False
-    elif shared.opts.fp8_storage == "Enable":
-        enable_fp8 = True
-    elif getattr(model, "is_sdxl", False) and shared.opts.fp8_storage == "Enable for SDXL":
-        enable_fp8 = True
-    else:
-        enable_fp8 = False
-    return enable_fp8
+    pass
 
 
 def set_model_type(model, state_dict):
-    model.is_sd1 = False
-    model.is_sd2 = False
-    model.is_sdxl = False
-    model.is_ssd = False
-    model.is_sd3 = False
-
-    if "model.diffusion_model.x_embedder.proj.weight" in state_dict:
-        model.is_sd3 = True
-        model.model_type = ModelType.SD3
-    elif hasattr(model, 'conditioner'):
-        model.is_sdxl = True
-
-        if 'model.diffusion_model.middle_block.1.transformer_blocks.0.attn1.to_q.weight' not in state_dict.keys():
-            model.is_ssd = True
-            model.model_type = ModelType.SSD
-        else:
-            model.model_type = ModelType.SDXL
-    elif hasattr(model.cond_stage_model, 'model'):
-        model.is_sd2 = True
-        model.model_type = ModelType.SD2
-    else:
-        model.is_sd1 = True
-        model.model_type = ModelType.SD1
+    pass
 
 
 def set_model_fields(model):
-    if not hasattr(model, 'latent_channels'):
-        model.latent_channels = 4
+    pass
 
 
 def load_model_weights(model, checkpoint_info: CheckpointInfo, state_dict, timer):
-    return
+    pass
 
 
 def enable_midas_autodownload():
-    """
-    Gives the ldm.modules.midas.api.load_model function automatic downloading.
-
-    When the 512-depth-ema model, and other future models like it, is loaded,
-    it calls midas.api.load_model to load the associated midas depth model.
-    This function applies a wrapper to download the model to the correct
-    location automatically.
-    """
-
-    midas_path = os.path.join(paths.models_path, 'midas')
-
-    # stable-diffusion-stability-ai hard-codes the midas model path to
-    # a location that differs from where other scripts using this model look.
-    # HACK: Overriding the path here.
-    for k, v in midas.api.ISL_PATHS.items():
-        file_name = os.path.basename(v)
-        midas.api.ISL_PATHS[k] = os.path.join(midas_path, file_name)
-
-    midas_urls = {
-        "dpt_large": "https://github.com/intel-isl/DPT/releases/download/1_0/dpt_large-midas-2f21e586.pt",
-        "dpt_hybrid": "https://github.com/intel-isl/DPT/releases/download/1_0/dpt_hybrid-midas-501f0c75.pt",
-        "midas_v21": "https://github.com/AlexeyAB/MiDaS/releases/download/midas_dpt/midas_v21-f6b98070.pt",
-        "midas_v21_small": "https://github.com/AlexeyAB/MiDaS/releases/download/midas_dpt/midas_v21_small-70d6b9c8.pt",
-    }
-
-    midas.api.load_model_inner = midas.api.load_model
-
-    def load_model_wrapper(model_type):
-        path = midas.api.ISL_PATHS[model_type]
-        if not os.path.exists(path):
-            if not os.path.exists(midas_path):
-                os.mkdir(midas_path)
-
-            print(f"Downloading midas model weights for {model_type} to {path}")
-            request.urlretrieve(midas_urls[model_type], path)
-            print(f"{model_type} downloaded")
-
-        return midas.api.load_model_inner(model_type)
-
-    midas.api.load_model = load_model_wrapper
+    pass
 
 
 def patch_given_betas():
-    import ldm.models.diffusion.ddpm
-
-    def patched_register_schedule(*args, **kwargs):
-        """a modified version of register_schedule function that converts plain list from Omegaconf into numpy"""
-
-        if isinstance(args[1], ListConfig):
-            args = (args[0], np.array(args[1]), *args[2:])
-
-        original_register_schedule(*args, **kwargs)
-
-    original_register_schedule = patches.patch(__name__, ldm.models.diffusion.ddpm.DDPM, 'register_schedule', patched_register_schedule)
+    pass
 
 
 def repair_config(sd_config, state_dict=None):
-    if not hasattr(sd_config.model.params, "use_ema"):
-        sd_config.model.params.use_ema = False
-
-    if hasattr(sd_config.model.params, 'unet_config'):
-        if shared.cmd_opts.no_half:
-            sd_config.model.params.unet_config.params.use_fp16 = False
-        elif shared.cmd_opts.upcast_sampling or shared.cmd_opts.precision == "half":
-            sd_config.model.params.unet_config.params.use_fp16 = True
-
-    if hasattr(sd_config.model.params, 'first_stage_config'):
-        if getattr(sd_config.model.params.first_stage_config.params.ddconfig, "attn_type", None) == "vanilla-xformers" and not shared.xformers_available:
-            sd_config.model.params.first_stage_config.params.ddconfig.attn_type = "vanilla"
-
-    # For UnCLIP-L, override the hardcoded karlo directory
-    if hasattr(sd_config.model.params, "noise_aug_config") and hasattr(sd_config.model.params.noise_aug_config.params, "clip_stats_path"):
-        karlo_path = os.path.join(paths.models_path, 'karlo')
-        sd_config.model.params.noise_aug_config.params.clip_stats_path = sd_config.model.params.noise_aug_config.params.clip_stats_path.replace("checkpoints/karlo_models", karlo_path)
-
-    # Do not use checkpoint for inference.
-    # This helps prevent extra performance overhead on checking parameters.
-    # The perf overhead is about 100ms/it on 4090 for SDXL.
-    if hasattr(sd_config.model.params, "network_config"):
-        sd_config.model.params.network_config.params.use_checkpoint = False
-    if hasattr(sd_config.model.params, "unet_config"):
-        sd_config.model.params.unet_config.params.use_checkpoint = False
-
+    pass
 
 
 def rescale_zero_terminal_snr_abar(alphas_cumprod):
@@ -638,6 +529,7 @@ def get_obj_from_str(string, reload=False):
     return getattr(importlib.import_module(module, package=None), cls)
 
 
+@torch.no_grad()
 def load_model(checkpoint_info=None, already_loaded_state_dict=None):
     from modules import sd_hijack
     checkpoint_info = checkpoint_info or select_checkpoint()
@@ -650,8 +542,8 @@ def load_model(checkpoint_info=None, already_loaded_state_dict=None):
 
         model_data.sd_model = None
         model_data.loaded_sd_models = []
-        model_management.unload_all_models()
-        model_management.soft_empty_cache()
+        memory_management.unload_all_models()
+        memory_management.soft_empty_cache()
         gc.collect()
 
     timer.record("unload existing model")
@@ -665,8 +557,15 @@ def load_model(checkpoint_info=None, already_loaded_state_dict=None):
         # cache newly loaded model
         checkpoints_loaded[checkpoint_info] = state_dict.copy()
 
-    sd_model = forge_loader.load_model_for_a1111(timer=timer, checkpoint_info=checkpoint_info, state_dict=state_dict)
+    dynamic_args['embedding_dir'] = cmd_opts.embeddings_dir
+    dynamic_args['emphasis_name'] = opts.emphasis
+    sd_model = forge_loader(state_dict)
+    timer.record("forge model load")
+
+    sd_model.sd_checkpoint_info = checkpoint_info
     sd_model.filename = checkpoint_info.filename
+    sd_model.sd_model_hash = checkpoint_info.calculate_shorthash()
+    timer.record("calculate hash")
 
     if not SkipWritingToConfig.skip:
         shared.opts.data["sd_model_checkpoint"] = checkpoint_info.title
@@ -688,18 +587,9 @@ def load_model(checkpoint_info=None, already_loaded_state_dict=None):
     model_data.set_sd_model(sd_model)
     model_data.was_loaded_at_least_once = True
 
-    sd_hijack.model_hijack.embedding_db.load_textual_inversion_embeddings(force_reload=True)  # Reload embeddings after model load as they may or may not fit the model
-
-    timer.record("load textual inversion embeddings")
-
     script_callbacks.model_loaded_callback(sd_model)
 
     timer.record("scripts callbacks")
-
-    with torch.no_grad():
-        sd_model.cond_stage_model_empty_prompt = get_empty_cond(sd_model)
-
-    timer.record("calculate empty prompt")
 
     print(f"Model loaded in {timer.summary()}.")
 
@@ -724,7 +614,7 @@ def apply_token_merging(sd_model, token_merging_ratio):
 
     print(f'token_merging_ratio = {token_merging_ratio}')
 
-    from ldm_patched.contrib.external_tomesd import TomePatcher
+    from backend.misc.tomesd import TomePatcher
 
     sd_model.forge_objects.unet = TomePatcher().patch(
         model=sd_model.forge_objects.unet,
