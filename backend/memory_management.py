@@ -302,7 +302,9 @@ def state_dict_size(sd, exclude_device=None):
 
 
 def state_dict_dtype(state_dict):
-    for k in state_dict.keys():
+    for k, v in state_dict.items():
+        if hasattr(v, 'is_gguf'):
+            return 'gguf'
         if 'bitsandbytes__nf4' in k:
             return 'nf4'
         if 'bitsandbytes__fp4' in k:
@@ -375,9 +377,9 @@ class LoadedModel:
         self.model.model_patches_to(self.model.model_dtype())
 
         try:
-            self.real_model = self.model.patch_model(device_to=patch_model_to)
+            self.real_model = self.model.forge_patch_model(patch_model_to)
         except Exception as e:
-            self.model.unpatch_model(self.model.offload_device)
+            self.model.forge_unpatch_model(self.model.offload_device)
             self.model_unload()
             raise e
 
@@ -429,9 +431,9 @@ class LoadedModel:
             self.model_accelerated = False
 
         if avoid_model_moving:
-            self.model.unpatch_model()
+            self.model.forge_unpatch_model()
         else:
-            self.model.unpatch_model(self.model.offload_device)
+            self.model.forge_unpatch_model(self.model.offload_device)
             self.model.model_patches_to(self.model.offload_device)
 
     def __eq__(self, other):
