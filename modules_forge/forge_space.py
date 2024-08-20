@@ -108,6 +108,13 @@ class ForgeSpace:
         )
 
         print(f'Downloaded: {downloaded}')
+
+        requirements_filename = os.path.abspath(os.path.realpath(os.path.join(self.root_path, 'requirements.txt')))
+
+        if os.path.exists(requirements_filename):
+            from modules.launch_utils import run_pip
+            run_pip(f'install -r "{requirements_filename}"', desc=f"space requirements for [{self.title}]")
+
         return self.refresh_gradio()
 
     def uninstall(self):
@@ -131,6 +138,11 @@ class ForgeSpace:
     def gradio_worker(self):
         import spaces
         spaces.unload_module()
+        original_cwd = os.getcwd()
+        os.chdir(self.hf_path)
+
+        if 'models' in sys.modules:
+            del sys.modules['models']
 
         memory_management.unload_all_models()
         sys.path.insert(0, self.hf_path)
@@ -155,17 +167,21 @@ class ForgeSpace:
             server_port=port
         )
 
+        if module_name in sys.modules:
+            del sys.modules[module_name]
+
+        if 'models' in sys.modules:
+            del sys.modules['models']
+
+        sys.path.remove(self.hf_path)
+        sys.path.remove(self.root_path)
+        os.chdir(original_cwd)
+
         while self.is_running:
             time.sleep(0.1)
 
         demo.close()
         self.gradio_metas = None
-
-        if module_name in sys.modules:
-            del sys.modules[module_name]
-
-        sys.path.remove(self.hf_path)
-        sys.path.remove(self.root_path)
         return
 
 
