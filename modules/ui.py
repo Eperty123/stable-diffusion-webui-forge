@@ -27,6 +27,7 @@ from modules import prompt_parser
 from modules.infotext_utils import image_from_url_text, PasteField
 from modules_forge.forge_canvas.canvas import ForgeCanvas, canvas_head
 from modules_forge import main_entry, forge_space
+import modules.processing_scripts.comments as comments
 
 
 create_setting_component = ui_settings.create_setting_component
@@ -173,6 +174,8 @@ def update_token_counter(text, steps, styles, *, is_positive=True):
     if shared.opts.include_styles_into_token_counters:
         apply_styles = shared.prompt_styles.apply_styles_to_prompt if is_positive else shared.prompt_styles.apply_negative_styles_to_prompt
         text = apply_styles(text, styles)
+    else:
+        text = comments.strip_comments(text).strip()
 
     try:
         text, _ = extra_networks.parse_prompt(text)
@@ -344,11 +347,31 @@ def create_ui():
                                     hr_distilled_cfg = gr.Slider(minimum=0.0, maximum=30.0, step=0.1, label="Hires Distilled CFG Scale", value=3.5, elem_id="txt2img_hr_distilled_cfg")
                                     hr_cfg = gr.Slider(minimum=1.0, maximum=30.0, step=0.1, label="Hires CFG Scale", value=7.0, elem_id="txt2img_hr_cfg")
    
-                                with FormRow(elem_id="txt2img_hires_fix_row3", variant="compact", visible=shared.opts.hires_fix_show_sampler) as hr_sampler_container:
+                                with FormRow(elem_id="txt2img_hires_fix_row3", variant="compact", visible=shared.opts.hires_fix_show_sampler) as hr_checkpoint_container:
+                                    hr_checkpoint_name = gr.Dropdown(label='Hires Checkpoint', elem_id="hr_checkpoint", choices=["Use same checkpoint"] + modules.sd_models.checkpoint_tiles(use_short=True), value="Use same checkpoint", scale=2)
 
-                                    hr_checkpoint_name = gr.Dropdown(label='Checkpoint', elem_id="hr_checkpoint", choices=["Use same checkpoint"], value="Use same checkpoint", visible=False, interactive=False)
-                                    # create_refresh_button(hr_checkpoint_name, modules.sd_models.list_models, lambda: {"choices": ["Use same checkpoint"] + modules.sd_models.checkpoint_tiles(use_short=True)}, "hr_checkpoint_refresh")
+                                    hr_checkpoint_refresh = ToolButton(value=refresh_symbol)
 
+                                    def get_additional_modules():
+                                        modules_list = ['Use same choices']
+                                        if main_entry.module_list == {}:
+                                            _, modules = main_entry.refresh_models()
+                                            modules_list += list(modules)
+                                        else:
+                                            modules_list += list(main_entry.module_list.keys())
+                                        return modules_list
+                                        
+                                    modules_list = get_additional_modules()
+
+                                    def refresh_model_and_modules():
+                                        modules_list = get_additional_modules()
+                                        return gr.update(choices=["Use same checkpoint"] + modules.sd_models.checkpoint_tiles(use_short=True)), gr.update(choices=modules_list)
+
+                                    hr_additional_modules = gr.Dropdown(label='Hires VAE / Text Encoder', elem_id="hr_vae_te", choices=modules_list, value=["Use same choices"], multiselect=True, scale=3)
+
+                                    hr_checkpoint_refresh.click(fn=refresh_model_and_modules, outputs=[hr_checkpoint_name, hr_additional_modules], show_progress=False)
+
+                                with FormRow(elem_id="txt2img_hires_fix_row3b", variant="compact", visible=shared.opts.hires_fix_show_sampler) as hr_sampler_container:
                                     hr_sampler_name = gr.Dropdown(label='Hires sampling method', elem_id="hr_sampler", choices=["Use same sampler"] + sd_samplers.visible_sampler_names(), value="Use same sampler")
                                     hr_scheduler = gr.Dropdown(label='Hires schedule type', elem_id="hr_scheduler", choices=["Use same scheduler"] + [x.label for x in sd_schedulers.schedulers], value="Use same scheduler")
 
@@ -419,6 +442,7 @@ def create_ui():
                 hr_resize_x,
                 hr_resize_y,
                 hr_checkpoint_name,
+                hr_additional_modules,
                 hr_sampler_name,
                 hr_scheduler,
                 hr_prompt,
@@ -437,7 +461,7 @@ def create_ui():
 
             txt2img_args = dict(
                 fn=wrap_gradio_gpu_call(modules.txt2img.txt2img, extra_outputs=[None, '', '']),
-                js=f"(...args) => {{ return submit(args.slice(0, {len(txt2img_inputs)})); }}",
+                _js="submit",
                 inputs=txt2img_inputs,
                 outputs=txt2img_outputs,
                 show_progress=False,
@@ -449,7 +473,7 @@ def create_ui():
             txt2img_upscale_inputs = txt2img_inputs[0:1] + [output_panel.gallery, dummy_component_number, output_panel.generation_info] + txt2img_inputs[1:]
             output_panel.button_upscale.click(
                 fn=wrap_gradio_gpu_call(modules.txt2img.txt2img_upscale, extra_outputs=[None, '', '']),
-                js=f"(...args) => {{ return submit_txt2img_upscale(args.slice(0, {len(txt2img_upscale_inputs)})); }}",
+                _js="submit_txt2img_upscale",
                 inputs=txt2img_upscale_inputs,
                 outputs=txt2img_outputs,
                 show_progress=False,
@@ -487,6 +511,7 @@ def create_ui():
                 PasteField(hr_resize_x, "Hires resize-1", api="hr_resize_x"),
                 PasteField(hr_resize_y, "Hires resize-2", api="hr_resize_y"),
                 PasteField(hr_checkpoint_name, "Hires checkpoint", api="hr_checkpoint_name"),
+                PasteField(hr_additional_modules, "Hires VAE/TE", api="hr_additional_modules"),
                 PasteField(hr_sampler_name, sd_samplers.get_hr_sampler_from_infotext, api="hr_sampler_name"),
                 PasteField(hr_scheduler, sd_samplers.get_hr_scheduler_from_infotext, api="hr_scheduler"),
                 PasteField(hr_sampler_container, lambda d: gr.update(visible=True) if d.get("Hires sampler", "Use same sampler") != "Use same sampler" or d.get("Hires checkpoint", "Use same checkpoint") != "Use same checkpoint" or d.get("Hires schedule type", "Use same scheduler") != "Use same scheduler" else gr.update()),
@@ -787,7 +812,7 @@ def create_ui():
 
             img2img_args = dict(
                 fn=wrap_gradio_gpu_call(modules.img2img.img2img, extra_outputs=[None, '', '']),
-                js=f"(...args) => {{ return submit_img2img(args.slice(0, {len(submit_img2img_inputs)})); }}",
+                _js="submit_img2img",
                 inputs=submit_img2img_inputs,
                 outputs=[
                     output_panel.gallery,
